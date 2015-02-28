@@ -3,6 +3,7 @@
 Created on Sat Feb 28 13:18:43 2015
 
 @author: LIght918
+updated from local pc
 """
 import pandas as pd
 import numpy as np
