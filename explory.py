@@ -7,9 +7,12 @@ updated from local pc
 """
 import pandas as pd
 import numpy as np
+from sklearn import metrics
 
 PATH = 'D:\\weibo\\data\\track1\\'
-TRIM_PATH = 'D:\\weibo\\data\\track1\\trim1000\\'
+#TRIM_PATH = 'D:\\weibo\\data\\track1\\trim1000\\'
+TRIM_PATH = '/home/light/Documents/ML/kdd2013/data/trim1000/'
+
 NROW = 5000
 df_rec_columns = ['userid1','itemid','result','timestamp']
 df_user_relation_columns = ['userid1','userid2']
@@ -93,18 +96,41 @@ feature = Feature()
 feature.process()
 
 
-class Model:
+class SimplyCF_item:
     df_rec = pd.DataFrame()
+    itemdict = dict()    
+    user_item_dict = {} 
     
     def __init__(self,df):    
         self.df_rec = df
-        
-    def modelCF(self):
-        
+
+## get item list        
+    def get_itemList(self):
+        itemlist_tmp = list(set(self.df_rec.itemid))
+        self.itemdict = {item:0 for item in itemlist_tmp}
     
+## get user item dictionary
+    def user_item_dict(self):
+        user_item_dict = {}        
+        item_groupby_user = self.df_rec.groupby(by='userid')
+    ## get item list groupby users
+        user_item_tuple_list = [item for item in item_groupby_user.itemid]
+        for user_item_tuple in user_item_tuple_list:
+    ## calculate each item vector, assign item vector of if item exists in itemlist to each user
+            item_vector = self.itemdict
+            for item in user_item_tuple[1]:
+                item_vector[item] = item_vector[item] + 1
+            user_item_dict[user_item_tuple[0]] = item_vector
+        self.user_item_dict = user_item_dict
+        
+     def item_similarity(self):
+         similarity_item_matrix = pd.DataFrame()
+         metrics.pairwise.cosine_distances
 
 feature = Feature()
-model = Model(feature.df_rec)
+model = SimplyCF_item(feature.df_rec)
+model.get_itemList()
+model.user_item_dict()
 
 
 
@@ -117,5 +143,18 @@ feature.df_user_profile[feature.df_user_profile['tweetNum']<2000][['gender','twe
 feature.df_rec.groupby(by='userid').sum()[feature.df_rec.groupby(by='userid').sum()['result']>-400]['result'].hist(bins=50)
 
 
+
 '''
+
+
+
+
+
+
+
+
+
+
+
+
 
