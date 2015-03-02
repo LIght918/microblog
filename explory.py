@@ -7,13 +7,17 @@ updated from local pc
 """
 import pandas as pd
 import numpy as np
+import copy
+import math
 from sklearn import metrics
+from sklearn.ensemble import GradientBoostingClassifier
+
 
 PATH = 'D:\\weibo\\data\\track1\\'
-#TRIM_PATH = 'D:\\weibo\\data\\track1\\trim1000\\'
-TRIM_PATH = '/home/light/Documents/ML/kdd2013/data/trim1000/'
+TRIM_PATH = 'D:\\weibo\\data\\track1\\trim1000\\'
+#TRIM_PATH = '/home/light/Documents/ML/kdd2013/data/trim1000/'
 
-NROW = 5000
+NROW = 500
 df_rec_columns = ['userid1','itemid','result','timestamp']
 df_user_relation_columns = ['userid1','userid2']
 df_user_action_columns = ['userid1','userid2','quoteNum','retweetNum','commNum']
@@ -28,6 +32,11 @@ class trimDataset:
     def __init__(self):
         print 'load user related information...'        
         self.trimUser()
+        self.trimRec()
+        self.trim_UserAction()
+        self.trim_UserProfile()
+        self.trim_UserKeyword()
+        self.trim_item()
 
     def trimUser(self):
 ## read user_sns file to get user relation
@@ -92,14 +101,17 @@ class Feature:
         self.df_user_profile.age = self.df_user_profile.age.astype(int)
         self.df_user_profile.age = 2014 - self.df_user_profile.age
 
-feature = Feature()
-feature.process()
 
 
-class SimplyCF_item:
+
+class SimplyCF_Model:
     df_rec = pd.DataFrame()
     itemdict = dict()    
     user_item_dict = {} 
+    user_item_matrix = {}
+    item_item_matrix = pd.DataFrame()
+    user_clicked_item = list()
+    test = pd.DataFrame()
     
     def __init__(self,df):    
         self.df_rec = df
@@ -111,37 +123,114 @@ class SimplyCF_item:
     
 ## get user item dictionary
     def user_item_dict(self):
-        user_item_dict = {}        
-        item_groupby_user = self.df_rec.groupby(by='userid')
+        user_item_dict = {}     
+    ## get item that is clicked by users    
+        item_groupby_user_clicked = self.df_rec[self.df_rec['result']==1].groupby(by='userid')
     ## get item list groupby users
-        user_item_tuple_list = [item for item in item_groupby_user.itemid]
+        user_item_tuple_list = [item for item in item_groupby_user_clicked.itemid]
         for user_item_tuple in user_item_tuple_list:
     ## calculate each item vector, assign item vector of if item exists in itemlist to each user
-            item_vector = self.itemdict
+            item_vector = copy.deepcopy(self.itemdict)
             for item in user_item_tuple[1]:
                 item_vector[item] = item_vector[item] + 1
             user_item_dict[user_item_tuple[0]] = item_vector
         self.user_item_dict = user_item_dict
         
-     def item_similarity(self):
-         similarity_item_matrix = pd.DataFrame()
-         metrics.pairwise.cosine_distances
+    def item_similarity(self):
+        self.user_item_matrix = pd.DataFrame(self.user_item_dict.values())
+        self.user_item_matrix.index = self.user_item_dict.keys()
+    ## calculate item pairwise similarity        
+                
+        self.item_item_matrix = pd.DataFrame(1-metrics.pairwise.pairwise_distances(self.user_item_matrix.T ,metric='cosine'))
+        self.item_item_matrix.columns = self.user_item_matrix.columns
+        self.item_item_matrix.index = self.user_item_matrix.columns   
+        self.item_item_matrix = self.item_item_matrix.fillna(0)
 
+## predict the prob of user clicking an item based on his click history
+    def calculate_item_clicked_probability(self, userid, itemid):
+        user_item_all = self.user_item_matrix.loc[userid,:]
+    ## all the item that user has clicked
+        user_clicked_item = list(user_item_all[user_item_all>0].index)
+        self.user_clicked_item = user_clicked_item
+    
+    ## get all items interact with itemid in item_item_matrix, and calculate prob
+        all_related_item = self.item_item_matrix.loc[itemid,:]
+        all_related_item_positive = all_related_item.loc[self.user_clicked_item]
+    ## for each clicked vector get a score
+        all_related_item_positive_distance = [score*score for score in all_related_item_positive]
+        value = sum(all_related_item_positive)*1.0 / math.sqrt(sum(all_related_item_positive_distance))
+        return value
+    
+    def predict(self):
+        self.test = self.df_rec[self.df_rec.userid!=387524]
+        self.test['score'] = self.test.apply(lambda x: self.calculate_item_clicked_probability(x['userid'],x['itemid']),axis=1)
+        self.test['score_norm'] = (self.test['score'] - self.test['score'].mean()) / (self.test['score'].max() - self.test['score'].min())
+        self.test['predict'] = self.test.apply(lambda x: 1 if x['score_norm']>0.2 else -1,axis=1)
+        
+        print 'precision:', metrics.precision_score(self.test['result'], self.test['predict'], labels=[-1,1], pos_label=1)
+        print 'recall:', metrics.recall_score(self.test['result'], self.test['predict'], labels=[-1,1], pos_label=1)
+
+class GBRT_model:
+    df_rec = pd.DataFrame()
+    itemdict = dict()    
+    user_item_dict = {} 
+    user_item_matrix = {}
+    item_item_matrix = pd.DataFrame()
+    
+    def __init__(self,df_rec,itemdict,user_item_dict,user_item_matrix,item_item_matrix):    
+        self.df_rec = df_rec
+        self.itemdict = itemdict
+        self.user_item_dict = user_item_dict
+        self.user_item_matrix = user_item_matrix
+        self.item_item_matrix = item_item_matrix
+
+## the following fuction all add features to GBRT, one is user_item_matrix, other is item_item_matrix, the keys are userid and itemid
+    def get_feature(self):
+    ## drop timestamp, useless for now            
+        self.df_rec = self.df_rec.drop('timestamp',axis=1)        
+    ## add user_item_matrix to feature        
+        self.user_item_matrix['userid'] = self.user_item_matrix.index
+        self.df_rec = self.df_rec.merge(self.user_item_matrix, on='userid', how='inner')
+        print 'feature_matrix add user_item_matrix: ', self.df_rec.head()
+    ## add item_item_matrix to feature
+        self.item_item_matrix['itemid'] = self.item_item_matrix.index
+        self.df_rec = self.df_rec.merge(self.item_item_matrix, on='itemid', how='inner')
+        print 'feature_matrix add item_item_matrix: ', self.df_rec.head()
+        
+#    def train_predit(self):
+        
+        
+trim = trimDataset()        
+'''        
 feature = Feature()
-model = SimplyCF_item(feature.df_rec)
-model.get_itemList()
-model.user_item_dict()
+feature.process()
 
+model_cf = SimplyCF_Model(feature.df_rec)
+model_cf.get_itemList()
+model_cf.user_item_dict()
+model_cf.item_similarity()
+model_cf.calculate_item_clicked_probability(214028,1775009)
+model_cf.predict()
 
+model_gbrt = GBRT_model(model_cf.df_rec, model_cf.itemdict, model_cf.user_item_dict, model_cf.user_item_matrix, model_cf.item_item_matrix)
+model_gbrt.get_feature()
 
+trainlabel = model_gbrt.df_rec['result']
+train = model_gbrt.df_rec.drop(['userid','itemid','result'],axis=1)
+clf = GradientBoostingClassifier(n_estimators=100, learning_rate=1,max_depth=4, random_state=0)
+clf = clf.fit(train, trainlabel)
+ypre =clf.predict(train)
+
+print 'precision:', metrics.precision_score(trainlabel, ypre, labels=[-1,1], pos_label=1)
+print 'recall:', metrics.recall_score(trainlabel, ypre, labels=[-1,1], pos_label=1)
 '''
 
 
-feature.df_user_profile[feature.df_user_profile['tweetNum']<2000][['gender','tweetNum']].boxplot(by='gender')
+#u:214028 i:1775009 r:1 t:1318382116
+'''
 
-# num of actions 
-feature.df_rec.groupby(by='userid').sum()[feature.df_rec.groupby(by='userid').sum()['result']>-400]['result'].hist(bins=50)
-
+## problems
+lots of negative label could be labeled as positive label, lower precision of positive labels
 
 
 '''
