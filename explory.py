@@ -11,13 +11,14 @@ import copy
 import math
 from sklearn import metrics
 from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.tree import DecisionTreeClassifier
 
 
 PATH = 'D:\\weibo\\data\\track1\\'
 TRIM_PATH = 'D:\\weibo\\data\\track1\\trim1000\\'
 #TRIM_PATH = '/home/light/Documents/ML/kdd2013/data/trim1000/'
 
-NROW = 500
+NROW = 1000
 df_rec_columns = ['userid1','itemid','result','timestamp']
 df_user_relation_columns = ['userid1','userid2']
 df_user_action_columns = ['userid1','userid2','quoteNum','retweetNum','commNum']
@@ -125,7 +126,7 @@ class SimplyCF_Model:
     def user_item_dict(self):
         user_item_dict = {}     
     ## get item that is clicked by users    
-        item_groupby_user_clicked = self.df_rec[self.df_rec['result']==1].groupby(by='userid')
+        item_groupby_user_clicked = self.df_rec[self.df_rec['result']==1].groupby(by='userid1')
     ## get item list groupby users
         user_item_tuple_list = [item for item in item_groupby_user_clicked.itemid]
         for user_item_tuple in user_item_tuple_list:
@@ -171,16 +172,13 @@ class SimplyCF_Model:
         print 'recall:', metrics.recall_score(self.test['result'], self.test['predict'], labels=[-1,1], pos_label=1)
 
 class GBRT_model:
-    df_rec = pd.DataFrame()
-    itemdict = dict()    
-    user_item_dict = {} 
+    df_rec = pd.DataFrame()  
     user_item_matrix = {}
     item_item_matrix = pd.DataFrame()
+    feature_vector = pd.DataFrame
     
-    def __init__(self,df_rec,itemdict,user_item_dict,user_item_matrix,item_item_matrix):    
+    def __init__(self,df_rec,user_item_matrix,item_item_matrix):    
         self.df_rec = df_rec
-        self.itemdict = itemdict
-        self.user_item_dict = user_item_dict
         self.user_item_matrix = user_item_matrix
         self.item_item_matrix = item_item_matrix
 
@@ -189,19 +187,25 @@ class GBRT_model:
     ## drop timestamp, useless for now            
         self.df_rec = self.df_rec.drop('timestamp',axis=1)        
     ## add user_item_matrix to feature        
-        self.user_item_matrix['userid'] = self.user_item_matrix.index
-        self.df_rec = self.df_rec.merge(self.user_item_matrix, on='userid', how='inner')
-        print 'feature_matrix add user_item_matrix: ', self.df_rec.head()
+        self.user_item_matrix['userid1'] = self.user_item_matrix.index
+        df1 = self.df_rec.merge(self.user_item_matrix, on='userid1', how='inner')
+        df1 = df1.sort(['userid1','itemid'])
+        df1_columns = [str(name)+'_user' for name in df1.columns]
+        df1.columns = df1_columns
     ## add item_item_matrix to feature
         self.item_item_matrix['itemid'] = self.item_item_matrix.index
-        self.df_rec = self.df_rec.merge(self.item_item_matrix, on='itemid', how='inner')
-        print 'feature_matrix add item_item_matrix: ', self.df_rec.head()
+        df2 = self.df_rec.merge(self.item_item_matrix, on='itemid', how='inner')
+        df2 = df2.sort(['userid1','itemid'])
+        df2 = df2.drop(['userid1','itemid','result'],axis=1)
+        df2_columns = [str(name)+'_item' for name in df2.columns]
+        df2.columns = df2_columns
+        df3 = pd.concat([df1,df2],axis=1)
+        self.feature_vector = df3
         
-#    def train_predit(self):
+    def train_predit(self):
         
         
-trim = trimDataset()        
-'''        
+       
 feature = Feature()
 feature.process()
 
@@ -209,23 +213,45 @@ model_cf = SimplyCF_Model(feature.df_rec)
 model_cf.get_itemList()
 model_cf.user_item_dict()
 model_cf.item_similarity()
-model_cf.calculate_item_clicked_probability(214028,1775009)
-model_cf.predict()
+#model_cf.calculate_item_clicked_probability(214028,1775009)
+#model_cf.predict()
 
-model_gbrt = GBRT_model(model_cf.df_rec, model_cf.itemdict, model_cf.user_item_dict, model_cf.user_item_matrix, model_cf.item_item_matrix)
-model_gbrt.get_feature()
+model_gbrt = GBRT_model(model_cf.df_rec, model_cf.user_item_matrix, model_cf.item_item_matrix)
+feature_vector = model_gbrt.get_feature()
 
-trainlabel = model_gbrt.df_rec['result']
-train = model_gbrt.df_rec.drop(['userid','itemid','result'],axis=1)
-clf = GradientBoostingClassifier(n_estimators=100, learning_rate=1,max_depth=4, random_state=0)
+'''
+trainlabel = feature_vector['result']
+train = feature_vector.drop(['userid1','itemid','result'],axis=1)
+clf = GradientBoostingClassifier(n_estimators=10, learning_rate=1,max_depth=4, random_state=0)
 clf = clf.fit(train, trainlabel)
 ypre =clf.predict(train)
 
 print 'precision:', metrics.precision_score(trainlabel, ypre, labels=[-1,1], pos_label=1)
 print 'recall:', metrics.recall_score(trainlabel, ypre, labels=[-1,1], pos_label=1)
+
+## random forest classifier
+
+clf = DecisionTreeClassifier(criterion='entropy', max_depth=8, min_samples_split=10)
+clf = clf.fit(train, trainlabel)
+ypre =clf.predict(train)
+print 'precision:', metrics.precision_score(trainlabel, ypre, labels=[-1,1], pos_label=1)
+print 'recall:', metrics.recall_score(trainlabel, ypre, labels=[-1,1], pos_label=1)
 '''
 
+## random forest classifier adding balancing positive and negative samples
+positive_train = feature_vector[feature_vector['result_user']==1]
+negative_train = feature_vector[feature_vector.result_user==-1]
+binomial_select = np.random.binomial(1,len(positive_train)*10.0/len(negative_train),size=len(negative_train))
+negative_train_selected = negative_train[binomial_select==1]
 
+resample_feature_vector = pd.concat([positive_train,negative_train_selected],axis=0)
+resample_trainlabel = resample_feature_vector['result_user']
+resample_train = resample_feature_vector.drop(['userid1_user','itemid_user','result_user'],axis=1)
+clf = DecisionTreeClassifier(criterion='entropy', max_depth=30, min_samples_split=10)
+clf = clf.fit(resample_train, resample_trainlabel)
+ypre =clf.predict(resample_train)
+print 'precision:', metrics.precision_score(resample_trainlabel, ypre, labels=[-1,1], pos_label=1)
+print 'recall:', metrics.recall_score(resample_trainlabel, ypre, labels=[-1,1], pos_label=1)
 #u:214028 i:1775009 r:1 t:1318382116
 '''
 
